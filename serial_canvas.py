@@ -4,101 +4,177 @@ import time
 import threading
 import serial
 
-
-INTERVAL = 0.01  # 10ms
-DATA_LENGTH = 500  # 가로축 데이터 개수
-data_values = []  # 수신된 데이터를 저장
-
-def receive_data():
-    global data_values
-
-    ser = serial.Serial('COM3', 115200, timeout=1)
-
-    while True:
-        data = ser.readline().decode('utf-8').strip()
-        if data:
-            try:
-                data = float(data)
-                print(data)
-                data_values.append(data)
-                if len(data_values) > DATA_LENGTH: 
-                    data_values.pop(0)
-                time.sleep(INTERVAL)
-            except:
-                pass
+INTERVAL = 0.0001
+data_values = []
+prv_value = 0.0
 
 class GraphApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Real-time Graph")
-        
-        # 창 크기 변경 가능하도록 설정
-        self.root.resizable(True, True)
-        self.root.bind("<Configure>", self.on_resize)
-        
-        # 초기 캔버스 크기 설정
-        self.canvas_width = 500
-        self.canvas_height = 300
-        
-        # 두 개의 캔버스를 생성
-        self.canvas1 = tk.Canvas(root, width=self.canvas_width, height=self.canvas_height, bg="white")
-        self.canvas2 = tk.Canvas(root, width=self.canvas_width, height=self.canvas_height, bg="white")
+        self.root.title("Real-time Graph with Buttons")
 
-        self.canvas1.pack(fill=tk.BOTH, expand=True)
-        self.canvas2.pack(fill=tk.BOTH, expand=True)
+        # speed
+        self.interver = 0.001
+
+        # 시리얼 포트 열기
+        self.ser = serial.Serial('COM4', 576000, timeout=1)
+
+        self.DATA_LENGTH = 1000 # 데이터 갯수
+
+        
+        self.ready_to_draw = False
+        self.last_time = time.time()
+
+        # 프레임 구성
+        self.top_frame = tk.Frame(root)
+        self.top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+
+        self.graph_frame = tk.Frame(root)
+        self.graph_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # 버튼들 (시그널 전송)
+        self.button1 = tk.Button(self.top_frame, text="VOLTS/DIV", command=lambda: self.send_signal('1'))
+        self.pause_button = tk.Button(self.top_frame, text="⏸️ 정지", command=self.toggle_pause)
+        self.pause_button.pack(side=tk.LEFT, padx=5)
+        self.button1.pack(side=tk.LEFT, padx=10)
+        self.fast_button = tk.Button(self.top_frame, text="TIME/DIV", command=self.time_div)
+        self.fast_button.pack(side=tk.LEFT, padx=12)
+
+        self.is_paused = False  # 그래프 흐름 정지 여부
+
+        # 캔버스 크기 설정 (x:1000, y:500)
+        self.canvas_width = 1000
+        self.canvas_height = 500
+        self.canvas1 = tk.Canvas(self.graph_frame, width=self.canvas_width, height=self.canvas_height, bg="white")
+        self.canvas2 = tk.Canvas(self.graph_frame, width=self.canvas_width, height=self.canvas_height, bg="white")
+
+        self.canvas1.pack(padx=10, pady=10)  # 자동 확장 X
+        self.canvas2.pack_forget()
         self.active_canvas = self.canvas1
+
+        # 데이터 수신 스레드 시작
+        self.receive_thread = threading.Thread(target=self.receive_data, daemon=True)
+        self.receive_thread.start()
 
         self.update_graph()
 
+    def time_div(self):
+        if(self.DATA_LENGTH <= 100):
+            self.DATA_LENGTH = 1000
+        else :
+            self.DATA_LENGTH = self.DATA_LENGTH - 100
+
+        
+
+    def send_signal(self, signal_char):
+        try:
+            self.ser.write(signal_char.encode('utf-8'))
+            print(f"Sent signal: {signal_char}")
+        except Exception as e:
+            print(f"Error sending signal: {e}")
+
+    def receive_data(self):
+        global data_values
+        global prv_value
+        while True:
+            if len(data_values) >= self.DATA_LENGTH:
+                self.ready_to_draw = True
+                time.sleep(0.0001)  # 너무 빠른 루프 방지
+                continue
+            try:
+                # data = self.ser.read(7)  # 응답 데이터 길이: 7바이트 (02 C0 XX XX XX XX 03)
+                # print(data)
+                # if len(data) == 7 and data[0] == 0x02 and data[1] == 0xC0 and data[-1] == 0x03:
+                #     float_value = struct.unpack('<f', data[2:6])[0]  # 리틀 엔디안 float 변환
+                #     data_values.append(float_value)
+                #     if len(data_values) > DATA_LENGTH:  # 최대 150개 데이터 저장
+                #         data_values.pop(0)
+                data = self.ser.readline().decode('utf-8').strip()
+                if data:
+                    try:
+                        value = int(data)
+                        f_value = (value / 4095) * 3.3
+                        if f_value > 3.3 or f_value < 0.1:
+                            data_values.append(prv_value)
+                        else:
+                            data_values.append(f_value)
+                        prv_value = f_value
+                    except ValueError:
+                        data_values.append(prv_value)
+            except Exception as e:
+                print(f"Error receiving data: {e}")
+
+            
+                
+    def toggle_pause(self):
+        self.is_paused = not self.is_paused
+        self.pause_button.config(text="▶️ 재생" if self.is_paused else "⏸️ 정지")
+
     def on_resize(self, event):
-        if event.widget == self.root:
-            self.canvas_width = event.width
-            self.canvas_height = event.height
-            self.canvas1.config(width=self.canvas_width, height=self.canvas_height)
-            self.canvas2.config(width=self.canvas_width, height=self.canvas_height)
+        # 크기 조정 방지
+        pass
 
     def update_graph(self):
-        if len(data_values) > 1:
+        if not self.is_paused and self.ready_to_draw:
+            current_time = time.time()  # 조건에 들어가기 직전 시간 기록
+            # 이전 시간과 비교하여 경과 시간 계산
+            elapsed_time = current_time - self.last_time
+            print(f"Time elapsed since last update: {elapsed_time:.6f} seconds")
+            # 현재 시간을 마지막 시간으로 업데이트
+            self.last_time = current_time
             self.draw_graph()
-        self.root.after(int(INTERVAL * 1000), self.update_graph)
+            data_values.clear()
+            self.ready_to_draw = False
+        self.root.after(int(INTERVAL * 10000), self.update_graph)
+
 
     def draw_graph(self):
-        canvas = self.canvas1 if self.active_canvas == self.canvas2 else self.canvas2
-        canvas.delete("all")  # 기존 그래프 지우기
-        
+        canvas = self.canvas1  # 항상 보여지는 canvas1에 그리기
+        canvas.delete("all")
+
+        x_range = self.DATA_LENGTH
+        step = int(self.DATA_LENGTH/10)
+        y_min = 0.0
+        y_max = 3.3
+        y_range = y_max - y_min
+
+        x_scale = self.canvas_width / (x_range - 1)
+        y_scale = self.canvas_height / y_range
+
+        # 점선 그리드 (Y축 0.3 단위)
+        for i in range(12):
+            y_val = y_min + i * 0.3
+            y = self.canvas_height - (y_val - y_min) * y_scale
+            canvas.create_line(0, y, self.canvas_width, y, fill="#ccc", dash=(2, 4))
+            canvas.create_text(5, y, anchor='nw', text=f"{y_val:.1f}V", fill="gray")
+
+        # 점선 그리드 (X축 10 단위)
+        for i in range(0, x_range + 1, step):
+            x = i * x_scale
+            canvas.create_line(x, 0, x, self.canvas_height, fill="#ccc", dash=(2, 4))
+
+        # 그래프 그리기
         if len(data_values) > 1:
-            x_scale = self.canvas_width / max(1, len(data_values))
-            y_min = min(data_values)
-            y_max = max(data_values)
-            y_range = y_max - y_min if y_max != y_min else 1
-            y_scale = self.canvas_height / y_range
-            
-            for i in range(1, len(data_values)):
-                x1 = (i - 1) * x_scale
-                y1 = self.canvas_height - (data_values[i - 1] - y_min) * y_scale
-                x2 = i * x_scale
-                y2 = self.canvas_height - (data_values[i] - y_min) * y_scale
-                canvas.create_line(x1, y1, x2, y2, fill="blue")
-            
-            # 세로축 값 표시
-            for i in range(5):
-                value = y_min + (y_range / 4) * i
-                y_pos = self.canvas_height - (value - y_min) * y_scale
-                canvas.create_text(20, y_pos, text=f"{value:.2f}", anchor=tk.W, fill="black")
-        
-        self.active_canvas.pack_forget()
-        canvas.pack(fill=tk.BOTH, expand=True)
-        self.active_canvas = canvas
+            try:
+                for i in range(1, len(data_values)):
+                    y1_val = float(data_values[i - 1])
+                    y2_val = float(data_values[i])
+
+                    x1 = (i - 1) * x_scale
+                    y1 = self.canvas_height - (y1_val - y_min) * y_scale
+                    x2 = i * x_scale
+                    y2 = self.canvas_height - (y2_val - y_min) * y_scale
+
+                    canvas.create_line(x1, y1, x2, y2, fill="blue")
+            except ValueError as e:
+                print(f"Invalid data in data_values: {e}")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = GraphApp(root)
-    
-    # 데이터 수신 스레드 시작
-    thread = threading.Thread(target=receive_data, daemon=True)
-    thread.start()
-    
-    root.mainloop()
+    root.mainloop() 
+
 
 
 
