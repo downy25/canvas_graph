@@ -20,7 +20,15 @@ class GraphApp:
         self.ser = serial.Serial('COM4', 576000, timeout=1)
 
         self.DATA_LENGTH = 1000 # 데이터 갯수
-
+        self.data_count = 0
+        self.time_button = 0
+        
+        #그래프 스케일
+        self.ymin_s = -10
+        self.ymax_s =  10
+        self.show_line = 20
+        self.weight = 1.0
+        self.count = 0
         
         self.ready_to_draw = False
         self.last_time = time.time()
@@ -45,7 +53,7 @@ class GraphApp:
         # 캔버스 크기 설정 (x:1000, y:500)
         self.canvas_width = 1000
         self.canvas_height = 500
-        self.canvas1 = tk.Canvas(self.graph_frame, width=self.canvas_width, height=self.canvas_height, bg="white")
+        self.canvas1 = tk.Canvas(self.graph_frame, width=self.canvas_width, height=self.canvas_height, bg="black")
         self.canvas2 = tk.Canvas(self.graph_frame, width=self.canvas_width, height=self.canvas_height, bg="white")
 
         self.canvas1.pack(padx=10, pady=10)  # 자동 확장 X
@@ -59,10 +67,10 @@ class GraphApp:
         self.update_graph()
 
     def time_div(self):
-        if(self.DATA_LENGTH <= 100):
-            self.DATA_LENGTH = 1000
-        else :
-            self.DATA_LENGTH = self.DATA_LENGTH - 100
+        self.time_button = self.time_button + 1
+        if(self.time_button == 2): self.time_button = 0
+        self.data_count = 0
+
 
         
 
@@ -70,6 +78,27 @@ class GraphApp:
         try:
             self.ser.write(signal_char.encode('utf-8'))
             print(f"Sent signal: {signal_char}")
+            self.count = self.count + 1
+            if(self.count == 3): self.count = 0
+
+            if(self.count == 1):
+                self.ymin_s = -10
+                self.ymax_s =  10
+                self.show_line = 20
+                self.weight = 2.0
+            elif(self.count == 2):
+                self.ymin_s = -5
+                self.ymax_s =  5
+                self.show_line = 10
+                self.weight = 1.0
+            else : 
+                self.ymin_s = -10
+                self.ymax_s =  10
+                self.show_line = 20
+                self.weight = 1.0
+
+
+
         except Exception as e:
             print(f"Error sending signal: {e}")
 
@@ -92,13 +121,31 @@ class GraphApp:
                 data = self.ser.readline().decode('utf-8').strip()
                 if data:
                     try:
-                        value = int(data)
-                        f_value = (value / 4095) * 3.3
+                        value = int(data)+700   ##바이어스 만큼 올림 --> 실험적으로 찾음음
+                        #print(value)
+                        # -5.0 ~ 5.0로 정규화
+                        f_value = float((value - 2048) / 2047) * 5.0
+                        if(self.time_button == 1):
+                            self.data_count = self.data_count + 1
+                            if(self.data_count % 20 == 0):
+                                data_values.append(f_value)
+                            else:
+                                pass
+
+                            if(self.data_count == 19): self.data_count = 0
+                        else :
+                            data_values.append(f_value)
+                                
+
+                        # 값이 원하는 값이 들어오지 않으면 처리리         
                         if f_value > 3.3 or f_value < 0.1:
                             data_values.append(prv_value)
                         else:
                             data_values.append(f_value)
+
+
                         prv_value = f_value
+
                     except ValueError:
                         data_values.append(prv_value)
             except Exception as e:
@@ -134,19 +181,21 @@ class GraphApp:
 
         x_range = self.DATA_LENGTH
         step = int(self.DATA_LENGTH/10)
-        y_min = 0.0
-        y_max = 3.3
-        y_range = y_max - y_min
+
+        y_min = self.ymin_s 
+        y_max = self.ymax_s 
+        y_range = y_max - y_min  # = 10.0
+        y_scale = self.canvas_height / y_range  # = 500 / 10 = 50.0 픽셀/Volt
 
         x_scale = self.canvas_width / (x_range - 1)
         y_scale = self.canvas_height / y_range
 
         # 점선 그리드 (Y축 0.3 단위)
-        for i in range(12):
-            y_val = y_min + i * 0.3
+        for i in range(self.show_line):
+            y_val = y_min + i * self.weight
             y = self.canvas_height - (y_val - y_min) * y_scale
             canvas.create_line(0, y, self.canvas_width, y, fill="#ccc", dash=(2, 4))
-            canvas.create_text(5, y, anchor='nw', text=f"{y_val:.1f}V", fill="gray")
+            canvas.create_text(5, y, anchor='nw', text=f"{y_val:.1f}V", fill="white")
 
         # 점선 그리드 (X축 10 단위)
         for i in range(0, x_range + 1, step):
@@ -157,15 +206,15 @@ class GraphApp:
         if len(data_values) > 1:
             try:
                 for i in range(1, len(data_values)):
-                    y1_val = float(data_values[i - 1])
-                    y2_val = float(data_values[i])
+                    y1_val = float(data_values[i - 1])*3.0
+                    y2_val = float(data_values[i])*3.0
 
                     x1 = (i - 1) * x_scale
                     y1 = self.canvas_height - (y1_val - y_min) * y_scale
                     x2 = i * x_scale
                     y2 = self.canvas_height - (y2_val - y_min) * y_scale
 
-                    canvas.create_line(x1, y1, x2, y2, fill="blue")
+                    canvas.create_line(x1, y1, x2, y2, fill="#FFFF00")
             except ValueError as e:
                 print(f"Invalid data in data_values: {e}")
 
